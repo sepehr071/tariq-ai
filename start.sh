@@ -197,7 +197,9 @@ port_listening() {
 }
 
 find_free_port() {
-  local start="$1" max=$((start + 100)) p="$start"
+  local start="$1"
+  local max=$((start + 100))
+  local p="$start"
   while [[ $p -lt $max ]]; do
     if ! port_listening "$p"; then echo "$p"; return 0; fi
     p=$((p + 1))
