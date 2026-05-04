@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# Tariq AI — one-command bootstrapper.
-#   1. Installs missing prereqs (uv, pnpm, docker, openssl) where possible.
-#   2. Scans free TCP ports for backend / frontend / keycloak.
-#   3. Runs setup.sh with discovered ports (syncs frontend<->backend env).
-#   4. Runs dev.sh (backend + frontend in parallel).
+# Tariq AI — one-command bootstrapper (pm2 launcher).
+#   1. Installs missing prereqs (uv, pnpm, pm2, docker, openssl) where possible.
+#   2. Stops existing pm2 entries (so their ports free up before scan).
+#   3. Scans free TCP ports for backend / frontend / keycloak.
+#   4. Runs setup.sh with discovered ports (syncs frontend<->backend env).
+#   5. Builds frontend (skipped with --dev) and starts both via pm2.
 #
 # Usage:
-#   ./start.sh                       # keycloak auth (default), auto-find ports
+#   ./start.sh                       # keycloak auth, prod build, auto-find ports
 #   ./start.sh --auth sqlite         # local users, no docker/keycloak
+#   ./start.sh --dev                 # pnpm dev instead of build+start
 #   ./start.sh --reset               # regenerate .env files
-#   ./start.sh --no-run              # setup only, don't launch dev servers
+#   ./start.sh --no-run              # setup only, don't launch pm2
 #   ./start.sh --skip-install        # don't auto-install missing tools
+#   ./start.sh --skip-build          # skip pnpm build (assume .next exists)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND="$ROOT/chatbot-backend"
+FRONTEND="$ROOT/chatbot-frontend"
+PM2_BACKEND=tariq-backend
+PM2_FRONTEND=tariq-frontend
 
 AUTH_PROVIDER=keycloak
 RESET_FLAG=()
 RUN=1
 SKIP_INSTALL=0
+SKIP_BUILD=0
+DEV_MODE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -26,7 +35,9 @@ while [[ $# -gt 0 ]]; do
     --reset) RESET_FLAG+=(--reset); shift ;;
     --no-run) RUN=0; shift ;;
     --skip-install) SKIP_INSTALL=1; shift ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
+    --dev) DEV_MODE=1; shift ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -57,7 +68,7 @@ elif [[ "$PLATFORM" == "macos" ]]; then
 fi
 
 sudo_if() {
-  if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then "$@"; else sudo "$@"; fi
 }
 
 install_pkg() {
@@ -111,10 +122,19 @@ ensure_pnpm() {
     corepack enable 2>/dev/null || true
     corepack prepare pnpm@latest --activate 2>/dev/null || npm install -g pnpm
   else
-    npm install -g pnpm
+    sudo_if npm install -g pnpm || npm install -g pnpm
   fi
   have pnpm || { c_err "pnpm install failed"; return 1; }
   c_ok "pnpm $(pnpm --version) installed"
+}
+
+ensure_pm2() {
+  have pm2 && return 0
+  ensure_node || return 1
+  c_info "Installing pm2 globally"
+  sudo_if npm install -g pm2 || npm install -g pm2
+  have pm2 || { c_err "pm2 install failed"; return 1; }
+  c_ok "pm2 $(pm2 -v) installed"
 }
 
 ensure_openssl() {
@@ -150,18 +170,25 @@ if [[ $SKIP_INSTALL -eq 0 ]]; then
   c_info "Checking prereqs (platform=$PLATFORM, pkg=${PKG:-none})"
   ensure_uv
   ensure_pnpm
+  ensure_pm2
   ensure_openssl
   if [[ "$AUTH_PROVIDER" == "keycloak" ]]; then ensure_docker || c_warn "Continuing without docker — keycloak mode will fail."; fi
   c_ok "Prereqs ready"
 else
   c_info "Skipping prereq install (--skip-install)"
+  have pm2 || { c_err "pm2 missing — re-run without --skip-install"; exit 1; }
 fi
+
+# --------------------------------------------------------------------------- #
+# Stop existing pm2 entries BEFORE port scan (so their ports free up)
+# --------------------------------------------------------------------------- #
+c_info "Stopping any existing pm2 entries"
+pm2 delete "$PM2_BACKEND" "$PM2_FRONTEND" >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------------------- #
 # Free-port scan (bash /dev/tcp probe — works without nc/lsof)
 # --------------------------------------------------------------------------- #
 port_listening() {
-  # returns 0 if SOMETHING listens on $1
   (exec 3<>/dev/tcp/127.0.0.1/"$1") >/dev/null 2>&1
   local rc=$?
   exec 3<&- 2>/dev/null || true
@@ -185,7 +212,7 @@ KEYCLOAK_PORT=$(find_free_port 8080)
 c_ok "Backend=$BACKEND_PORT  Frontend=$FRONTEND_PORT  Keycloak=$KEYCLOAK_PORT"
 
 # --------------------------------------------------------------------------- #
-# Hand off to setup.sh — it writes both .envs with matching URLs/ports
+# Hand off to setup.sh — writes both .envs with matching URLs/ports
 # --------------------------------------------------------------------------- #
 SETUP_ARGS=(
   --auth "$AUTH_PROVIDER"
@@ -198,12 +225,60 @@ c_info "Running setup.sh ${SETUP_ARGS[*]}"
 "$ROOT/setup.sh" "${SETUP_ARGS[@]}"
 
 # --------------------------------------------------------------------------- #
-# Launch dev servers
+# Build frontend (prod mode only)
+# --------------------------------------------------------------------------- #
+if [[ $RUN -eq 1 && $DEV_MODE -eq 0 && $SKIP_BUILD -eq 0 ]]; then
+  c_info "Building frontend (pnpm build)"
+  (cd "$FRONTEND" && PORT="$FRONTEND_PORT" pnpm build)
+  c_ok "Frontend built"
+fi
+
+# --------------------------------------------------------------------------- #
+# Launch via pm2
 # --------------------------------------------------------------------------- #
 if [[ $RUN -eq 1 ]]; then
   echo
-  c_info "Launching dev servers (Ctrl-C to stop)"
-  exec "$ROOT/dev.sh"
+  c_info "Starting pm2 services"
+
+  # Backend — uvicorn under uv
+  (
+    cd "$BACKEND"
+    unset VIRTUAL_ENV
+    pm2 start uv \
+      --name "$PM2_BACKEND" \
+      --interpreter none \
+      --time \
+      -- run python -m uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT"
+  )
+
+  # Frontend — pnpm start (prod) or pnpm dev
+  FRONTEND_CMD=start
+  [[ $DEV_MODE -eq 1 ]] && FRONTEND_CMD=dev
+  (
+    cd "$FRONTEND"
+    PORT="$FRONTEND_PORT" \
+    NODE_USE_ENV_PROXY=1 \
+    NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,::1}" \
+    pm2 start pnpm \
+      --name "$PM2_FRONTEND" \
+      --interpreter none \
+      --time \
+      --update-env \
+      -- "$FRONTEND_CMD"
+  )
+
+  pm2 save >/dev/null 2>&1 || true
+
+  echo
+  c_ok "Services running"
+  pm2 ls
+  echo
+  echo "  Backend:  http://localhost:${BACKEND_PORT}/api/v1/docs"
+  echo "  Frontend: http://localhost:${FRONTEND_PORT}"
+  echo
+  echo "  Logs:     pm2 logs $PM2_BACKEND   |   pm2 logs $PM2_FRONTEND"
+  echo "  Stop:     pm2 delete $PM2_BACKEND $PM2_FRONTEND"
+  echo "  Boot:     pm2 startup   (then run the printed sudo cmd, then pm2 save)"
 else
-  c_ok "Setup complete. Run ./dev.sh when ready."
+  c_ok "Setup complete. Re-run without --no-run to launch pm2."
 fi
