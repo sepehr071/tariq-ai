@@ -18,6 +18,7 @@ import {
 } from "@/lib/api";
 import { useChatPreset } from "@/context/chat-preset-context";
 import { buildDifyQuery } from "@/lib/chat-preset";
+import { randomId } from "@/lib/utils";
 
 // --- Types ---
 
@@ -205,7 +206,7 @@ export function ChatProvider({ userId, children }: ChatProviderProps) {
       const currentActiveId = state.activeId;
 
       const userMsg: Message = {
-        id: crypto.randomUUID(),
+        id: randomId(),
         role: "user",
         content,
         timestamp: new Date(),
@@ -235,7 +236,7 @@ export function ChatProvider({ userId, children }: ChatProviderProps) {
               dispatch({
                 type: "ADD_ASSISTANT_MESSAGE",
                 message: {
-                  id: crypto.randomUUID(),
+                  id: randomId(),
                   role: "assistant",
                   content: accumulated,
                   timestamp: new Date(),

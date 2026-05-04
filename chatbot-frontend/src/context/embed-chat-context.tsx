@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { EmbedAuthRequiredError, streamEmbedChatMessage } from "@/lib/embed-api";
+import { randomId } from "@/lib/utils";
 
 // --- Types ---
 
@@ -196,11 +197,7 @@ export function EmbedChatProvider({ appId, children }: EmbedChatProviderProps) {
     // Backend requires the anon_ prefix; regenerate if stored value is malformed
     // (e.g. from an earlier build that stored a raw UUID).
     if (!anonId || !anonId.startsWith("anon_")) {
-      const suffix =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `${Math.random().toString(36).slice(2)}_${Date.now()}`;
-      anonId = `anon_${suffix}`;
+      anonId = `anon_${randomId()}`;
       window.localStorage.setItem(ANON_ID_KEY, anonId);
     }
 
@@ -241,7 +238,7 @@ export function EmbedChatProvider({ appId, children }: EmbedChatProviderProps) {
       if (!state.anonId) return;
 
       const userMsg: EmbedMessage = {
-        id: crypto.randomUUID(),
+        id: randomId(),
         role: "user",
         content: trimmed,
         timestamp: new Date(),
@@ -273,7 +270,7 @@ export function EmbedChatProvider({ appId, children }: EmbedChatProviderProps) {
               dispatch({
                 type: "ADD_ASSISTANT_MESSAGE",
                 message: {
-                  id: crypto.randomUUID(),
+                  id: randomId(),
                   role: "assistant",
                   content: accumulated,
                   timestamp: new Date(),
