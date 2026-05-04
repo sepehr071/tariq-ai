@@ -267,7 +267,10 @@ set_env_kv() {
 }
 
 if [[ -n "$PUBLIC_HOST" ]]; then
-  PUBLIC_ORIGIN="${PUBLIC_HOST%/}:${FRONTEND_PORT}"
+  # PUBLIC_HOST is the full origin browsers will see (scheme + host [+ port]).
+  # Use verbatim — do NOT append FRONTEND_PORT. If user serves through nginx
+  # on :80, origin has no port. If they open :3001 directly, they include it.
+  PUBLIC_ORIGIN="${PUBLIC_HOST%/}"
   c_info "Overriding APP_ORIGIN to $PUBLIC_ORIGIN"
   set_env_kv "$BACKEND/.env" "CORS_ORIGINS" "[\"$PUBLIC_ORIGIN\",\"http://localhost:$FRONTEND_PORT\"]"
   set_env_kv "$FRONTEND/.env.local" "NEXT_PUBLIC_APP_ORIGIN" "$PUBLIC_ORIGIN"
@@ -386,7 +389,7 @@ if [[ $RUN -eq 1 ]]; then
   pm2 ls
   echo
   if [[ -n "$PUBLIC_HOST" ]]; then
-    echo "  Frontend (public): ${PUBLIC_HOST%/}:${FRONTEND_PORT}"
+    echo "  Frontend (public): ${PUBLIC_HOST%/}"
   fi
   echo "  Frontend (local):  http://localhost:${FRONTEND_PORT}"
   echo "  Backend docs:      http://localhost:${BACKEND_PORT}/api/v1/docs"
