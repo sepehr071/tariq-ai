@@ -2,18 +2,23 @@
 # Tariq AI — one-command bootstrapper (pm2 launcher).
 #   1. Installs missing prereqs (uv, pnpm, pm2, docker, openssl) where possible.
 #   2. Stops existing pm2 entries (so their ports free up before scan).
-#   3. Scans free TCP ports for backend / frontend / keycloak.
-#   4. Runs setup.sh with discovered ports (syncs frontend<->backend env).
-#   5. Builds frontend (skipped with --dev) and starts both via pm2.
+#   3. Optionally wipes .next/ + sqlite db (--clean).
+#   4. Scans free TCP ports for backend / frontend / keycloak.
+#   5. Runs setup.sh with discovered ports (syncs frontend<->backend env).
+#   6. Optionally rewrites APP_ORIGIN + CORS for non-localhost server (--public-host).
+#   7. Builds frontend (skipped with --dev) and starts both via pm2.
+#   8. Waits for backend health, then smoke-tests both stacks via curl.
 #
 # Usage:
-#   ./start.sh                       # keycloak auth, prod build, auto-find ports
-#   ./start.sh --auth sqlite         # local users, no docker/keycloak
-#   ./start.sh --dev                 # pnpm dev instead of build+start
-#   ./start.sh --reset               # regenerate .env files
-#   ./start.sh --no-run              # setup only, don't launch pm2
-#   ./start.sh --skip-install        # don't auto-install missing tools
-#   ./start.sh --skip-build          # skip pnpm build (assume .next exists)
+#   ./start.sh                                # keycloak auth, prod build
+#   ./start.sh --auth sqlite                  # local users, no docker
+#   ./start.sh --auth sqlite --dev            # pnpm dev under pm2
+#   ./start.sh --auth sqlite --clean          # wipe .next/ + tariq.db first
+#   ./start.sh --auth sqlite --public-host http://1.2.3.4   # remote-accessible server
+#   ./start.sh --reset                        # regenerate .env files
+#   ./start.sh --no-run                       # setup only, don't launch pm2
+#   ./start.sh --skip-install                 # don't auto-install missing tools
+#   ./start.sh --skip-build                   # skip pnpm build
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +33,8 @@ RUN=1
 SKIP_INSTALL=0
 SKIP_BUILD=0
 DEV_MODE=0
+CLEAN=0
+PUBLIC_HOST=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,7 +44,9 @@ while [[ $# -gt 0 ]]; do
     --skip-install) SKIP_INSTALL=1; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --dev) DEV_MODE=1; shift ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --clean) CLEAN=1; shift ;;
+    --public-host) PUBLIC_HOST="$2"; shift 2 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -143,6 +152,12 @@ ensure_openssl() {
   install_pkg openssl || { c_err "Install openssl manually."; return 1; }
 }
 
+ensure_curl() {
+  have curl && return 0
+  c_info "Installing curl"
+  install_pkg curl || { c_err "Install curl manually."; return 1; }
+}
+
 ensure_docker() {
   have docker && docker compose version >/dev/null 2>&1 && return 0
   if [[ "$PLATFORM" == "macos" || "$PLATFORM" == "windows" ]]; then
@@ -172,11 +187,13 @@ if [[ $SKIP_INSTALL -eq 0 ]]; then
   ensure_pnpm
   ensure_pm2
   ensure_openssl
+  ensure_curl
   if [[ "$AUTH_PROVIDER" == "keycloak" ]]; then ensure_docker || c_warn "Continuing without docker — keycloak mode will fail."; fi
   c_ok "Prereqs ready"
 else
   c_info "Skipping prereq install (--skip-install)"
   have pm2 || { c_err "pm2 missing — re-run without --skip-install"; exit 1; }
+  have curl || { c_err "curl missing — re-run without --skip-install"; exit 1; }
 fi
 
 # --------------------------------------------------------------------------- #
@@ -184,6 +201,16 @@ fi
 # --------------------------------------------------------------------------- #
 c_info "Stopping any existing pm2 entries"
 pm2 delete "$PM2_BACKEND" "$PM2_FRONTEND" >/dev/null 2>&1 || true
+
+# --------------------------------------------------------------------------- #
+# Optional: wipe build/db artifacts (--clean)
+# --------------------------------------------------------------------------- #
+if [[ $CLEAN -eq 1 ]]; then
+  c_info "Cleaning .next/ and sqlite db"
+  rm -rf "$FRONTEND/.next" || true
+  rm -f "$BACKEND/tariq.db" "$BACKEND/tariq.db-journal" || true
+  c_ok "Cleaned"
+fi
 
 # --------------------------------------------------------------------------- #
 # Free-port scan (bash /dev/tcp probe — works without nc/lsof)
@@ -227,6 +254,27 @@ c_info "Running setup.sh ${SETUP_ARGS[*]}"
 "$ROOT/setup.sh" "${SETUP_ARGS[@]}"
 
 # --------------------------------------------------------------------------- #
+# Override APP_ORIGIN + CORS for non-localhost servers (--public-host)
+# --------------------------------------------------------------------------- #
+set_env_kv() {
+  local file="$1" key="$2" value="$3"
+  if grep -qE "^${key}=" "$file" 2>/dev/null; then
+    awk -v k="$key" -v v="$value" 'BEGIN{FS=OFS="="} $1==k{$0=k"="v} 1' "$file" > "$file.tmp"
+    mv "$file.tmp" "$file"
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+if [[ -n "$PUBLIC_HOST" ]]; then
+  PUBLIC_ORIGIN="${PUBLIC_HOST%/}:${FRONTEND_PORT}"
+  c_info "Overriding APP_ORIGIN to $PUBLIC_ORIGIN"
+  set_env_kv "$BACKEND/.env" "CORS_ORIGINS" "[\"$PUBLIC_ORIGIN\",\"http://localhost:$FRONTEND_PORT\"]"
+  set_env_kv "$FRONTEND/.env.local" "NEXT_PUBLIC_APP_ORIGIN" "$PUBLIC_ORIGIN"
+  c_ok "CORS + APP_ORIGIN updated for public access"
+fi
+
+# --------------------------------------------------------------------------- #
 # Build frontend (prod mode only)
 # --------------------------------------------------------------------------- #
 if [[ $RUN -eq 1 && $DEV_MODE -eq 0 && $SKIP_BUILD -eq 0 ]]; then
@@ -234,6 +282,30 @@ if [[ $RUN -eq 1 && $DEV_MODE -eq 0 && $SKIP_BUILD -eq 0 ]]; then
   (cd "$FRONTEND" && PORT="$FRONTEND_PORT" pnpm build)
   c_ok "Frontend built"
 fi
+
+# --------------------------------------------------------------------------- #
+# Health-poll helper
+# --------------------------------------------------------------------------- #
+wait_for_url() {
+  local url="$1" name="$2" tries="${3:-60}"
+  c_info "Waiting for $name ($url)"
+  local i=0
+  while [[ $i -lt $tries ]]; do
+    if curl -fsS -o /dev/null -m 2 "$url"; then
+      c_ok "$name responded after ${i}s"
+      return 0
+    fi
+    # also accept 4xx as 'reachable' — endpoints that need auth still return HTTP
+    if curl -s -o /dev/null -m 2 -w '%{http_code}' "$url" | grep -qE '^[2345][0-9][0-9]$'; then
+      c_ok "$name reachable (4xx is fine — process is up)"
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  c_err "$name did not respond within ${tries}s"
+  return 1
+}
 
 # --------------------------------------------------------------------------- #
 # Launch via pm2
@@ -250,8 +322,15 @@ if [[ $RUN -eq 1 ]]; then
       --name "$PM2_BACKEND" \
       --interpreter none \
       --time \
+      --update-env \
       -- run python -m uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT"
   )
+
+  # Wait for backend to bind its port + accept HTTP
+  wait_for_url "http://localhost:${BACKEND_PORT}/api/v1/openapi.json" "backend" 60 || {
+    c_err "Backend never came up — check: pm2 logs $PM2_BACKEND"
+    exit 1
+  }
 
   # Frontend — pnpm start (prod) or pnpm dev
   FRONTEND_CMD=start
@@ -269,18 +348,55 @@ if [[ $RUN -eq 1 ]]; then
       -- "$FRONTEND_CMD"
   )
 
+  # Wait for frontend
+  wait_for_url "http://localhost:${FRONTEND_PORT}/" "frontend" 90 || {
+    c_warn "Frontend slow to start — check: pm2 logs $PM2_FRONTEND"
+  }
+
   pm2 save >/dev/null 2>&1 || true
+
+  # ----------------------------------------------------------------------- #
+  # Smoke tests — confirm frontend can reach backend through its proxy
+  # ----------------------------------------------------------------------- #
+  c_info "Smoke testing integration"
+  ME_CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://localhost:${FRONTEND_PORT}/api/auth/me" || echo 000)
+  if [[ "$ME_CODE" == "401" ]]; then
+    c_ok "frontend /api/auth/me → 401 (expected when no cookie). Frontend ↔ backend wired correctly."
+  elif [[ "$ME_CODE" == "200" ]]; then
+    c_ok "frontend /api/auth/me → 200 (cookie present from previous session)."
+  else
+    c_warn "frontend /api/auth/me → $ME_CODE (expected 401). Frontend may not reach backend."
+    c_warn "  Check FASTAPI_URL in $FRONTEND/.env.local matches backend port $BACKEND_PORT"
+  fi
+
+  if [[ "$AUTH_PROVIDER" == "sqlite" ]]; then
+    BACKEND_LOGIN_CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+      -X POST "http://localhost:${BACKEND_PORT}/api/v1/auth/login" \
+      -H 'Content-Type: application/json' \
+      -d '{"email":"smoke@test.invalid","password":"wrongpass"}' || echo 000)
+    if [[ "$BACKEND_LOGIN_CODE" == "401" ]]; then
+      c_ok "backend /auth/login → 401 (expected for unknown user). Login path alive."
+    else
+      c_warn "backend /auth/login → $BACKEND_LOGIN_CODE (expected 401)"
+    fi
+  fi
 
   echo
   c_ok "Services running"
   pm2 ls
   echo
-  echo "  Backend:  http://localhost:${BACKEND_PORT}/api/v1/docs"
-  echo "  Frontend: http://localhost:${FRONTEND_PORT}"
+  if [[ -n "$PUBLIC_HOST" ]]; then
+    echo "  Frontend (public): ${PUBLIC_HOST%/}:${FRONTEND_PORT}"
+  fi
+  echo "  Frontend (local):  http://localhost:${FRONTEND_PORT}"
+  echo "  Backend docs:      http://localhost:${BACKEND_PORT}/api/v1/docs"
   echo
-  echo "  Logs:     pm2 logs $PM2_BACKEND   |   pm2 logs $PM2_FRONTEND"
-  echo "  Stop:     pm2 delete $PM2_BACKEND $PM2_FRONTEND"
-  echo "  Boot:     pm2 startup   (then run the printed sudo cmd, then pm2 save)"
+  echo "  Effective env:"
+  grep -E "^(PORT|FASTAPI_URL|NEXT_PUBLIC_APP_ORIGIN|AUTH_PROVIDER|DATABASE_URL)=" "$BACKEND/.env" "$FRONTEND/.env.local" 2>/dev/null | sed 's/^/    /'
+  echo
+  echo "  Logs:  pm2 logs $PM2_BACKEND   |   pm2 logs $PM2_FRONTEND"
+  echo "  Stop:  pm2 delete $PM2_BACKEND $PM2_FRONTEND"
+  echo "  Boot:  pm2 startup    (then run printed sudo cmd, then: pm2 save)"
 else
   c_ok "Setup complete. Re-run without --no-run to launch pm2."
 fi
