@@ -1,0 +1,15 @@
+{
+  "placeholder": "پیام خود را بنویسید...",
+  "send": "ارسال",
+  "thinking": "در حال فکر کردن...",
+  "welcome": "چطور می‌توانم کمکتان کنم؟",
+  "welcomeSubtitle": "هر سوالی دارید بپرسید",
+  "copy": "کپی",
+  "copied": "کپی شد!",
+  "errorLoadingMessages": "خطا در بارگذاری پیام‌ها. لطفا دوباره تلاش کنید.",
+  "errorSendingMessage": "خطا در ارسال پیام. لطفا دوباره تلاش کنید.",
+  "errorLoadingConversations": "خطا در بارگذاری گفتگوها.",
+  "retry": "تلاش مجدد",
+  "loadingMessages": "در حال بارگذاری پیام‌ها...",
+  "dismiss": "رد کردن"
+}

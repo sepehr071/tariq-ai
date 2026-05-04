@@ -1,0 +1,229 @@
+# Tariq Widget — Host-Site Integration Guide
+
+For the developer of the **host website** that embeds the Tariq chat widget. This doc explains what to change on your end so logged-in users on your site are recognized by the widget instead of treated as anonymous.
+
+If you don't need authenticated chat, ignore this doc — the widget works anonymously by default.
+
+---
+
+## What you're integrating with
+
+You ship one HTML `<script>` tag. It loads a launcher that injects an iframe pointing at `https://chat.<our-domain>/embed/...`. The iframe is on **our** origin, not yours, so it cannot read your cookies or session storage.
+
+To tie chat traffic to your logged-in user, **you hand us their Keycloak access token**. We verify it, extract the `sub` claim, and use `kc_<sub>` as the user id sent to our chat backend.
+
+You do **not** proxy anything, do **not** call our APIs server-side, and do **not** store anything new. Just expose the token to a JS callback.
+
+---
+
+## The full picture
+
+```
+┌────────────────────────── Host site (your domain) ──────────────────────────┐
+│                                                                              │
+│   Browser                                                                    │
+│   ┌────────────────────────────────────────────────┐                         │
+│   │ keycloak-js  ──►  keycloak.token (JWT)         │                         │
+│   │                       │                         │                         │
+│   │                       ▼                         │                         │
+│   │ widget.js  ──►  setTokenProvider(...)          │                         │
+│   │                       │                         │                         │
+│   │                       │ before each send:       │                         │
+│   │                       │   await provider()      │                         │
+│   │                       │   postMessage(token)    │                         │
+│   │                       ▼                         │                         │
+│   │ <iframe src="chat.ours.com/embed/...">         │                         │
+│   │   POST /api/chat/embed/messages                │                         │
+│   │   { app, query, token, conversation_id }       │                         │
+│   │                       │                         │                         │
+│   └───────────────────────┼─────────────────────────┘                         │
+│                           │                                                  │
+└───────────────────────────┼──────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────── Tariq deployment (our domain) ──────────────────────┐
+│   /api/chat/embed/messages                                                   │
+│     1. verify token (jose, against your Keycloak's JWKS)                     │
+│     2. check `iss` and `aud`                                                 │
+│     3. user = "kc_" + payload.sub                                            │
+│     4. forward to Dify (token never leaves Tariq)                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+Token never reaches Dify. Tariq only forwards the derived `kc_<sub>` user id.
+
+---
+
+## What you change
+
+Three things, in this order.
+
+### 1. Add an audience mapper in your Keycloak client
+
+Tariq verifies that the access token's `aud` claim contains an agreed-upon value. Default: `tariq-widget`.
+
+In Keycloak Admin Console:
+
+1. Open your realm (e.g. `acme`).
+2. **Clients** → pick the client your site uses (e.g. `acme-web`).
+3. **Client scopes** tab → click `<your-client>-dedicated`.
+4. **Add mapper** → **By configuration** → **Audience**.
+5. Fill in:
+
+   | Field | Value |
+   |-------|-------|
+   | Name | `tariq-widget-audience` |
+   | Included Custom Audience | `tariq-widget` |
+   | Add to access token | **ON** |
+   | Add to ID token | OFF |
+
+6. Save.
+
+Newly issued tokens now contain `aud: ["acme-web", "tariq-widget"]`.
+
+> Skip this step **only** if you tell us to use your client id (`acme-web`) as the audience instead. The mapper is preferred — keeps your client config decoupled from us.
+
+### 2. Add the bridge script on every page that embeds the widget
+
+Place after your existing `keycloak-js` initialization and after the widget script tag:
+
+```html
+<!-- 1. Your existing Keycloak setup (already there in production) -->
+<script src="https://www.keycloak.org/js/keycloak.min.js"></script>
+<script>
+  const keycloak = new Keycloak({
+    url: "https://auth.acme.com",
+    realm: "acme",
+    clientId: "acme-web",
+  });
+  keycloak.init({ onLoad: "check-sso", silentCheckSsoRedirectUri: "..." });
+  window.keycloak = keycloak; // expose for widget bridge
+</script>
+
+<!-- 2. Tariq widget launcher (one-line install, unchanged) -->
+<script src="https://chat.<our-domain>/widget.js" data-app="support" defer></script>
+
+<!-- 3. Bridge: feed Keycloak token to Tariq -->
+<script>
+  (function bridgeTariq() {
+    if (!window.Tariq || !window.keycloak) {
+      return setTimeout(bridgeTariq, 50);
+    }
+
+    // Called by widget before every user message. Returns a fresh token.
+    window.Tariq.setTokenProvider(async () => {
+      try {
+        await window.keycloak.updateToken(30); // refresh if <30s remain
+        return window.keycloak.token;
+      } catch (e) {
+        console.warn("[Tariq] token refresh failed", e);
+        return null; // widget will get 401 and fire authRequired
+      }
+    });
+
+    // Tariq returned 401 → user must log in again
+    window.Tariq.on("authRequired", () => {
+      window.keycloak.login();
+    });
+  })();
+</script>
+```
+
+That's the entire host code change. No build step. No new dependencies. Works with whatever framework you already have.
+
+### 3. Tell us three things
+
+We need to set them on Tariq's deployment env. Send us:
+
+1. Your Keycloak issuer URL — e.g. `https://auth.acme.com/realms/acme`
+2. The audience value to expect — `tariq-widget` if you added the mapper, otherwise your client id
+3. The `data-app` value(s) you want to require auth for — e.g. `support`, `sales`
+
+We set:
+
+```env
+EMBED_KEYCLOAK_ISSUER=https://auth.acme.com/realms/acme
+EMBED_KEYCLOAK_AUDIENCE=tariq-widget
+EMBED_REQUIRE_AUTH=support,sales
+```
+
+Apps in `EMBED_REQUIRE_AUTH` reject unauthenticated requests (401). Apps not in the list keep working anonymously — useful if you want a public docs bot alongside an authenticated support bot.
+
+---
+
+## How the runtime flow works
+
+1. User loads your page. `keycloak-js` does silent SSO. `keycloak.token` is now a valid access token.
+2. User clicks the floating Tariq bubble. Panel opens.
+3. User types a message and hits Enter.
+4. Widget calls your `tokenProvider()`. Your code calls `keycloak.updateToken(30)` (refreshes if <30s left), returns `keycloak.token`.
+5. Widget POSTs to Tariq with `{ app, query, token, conversation_id }`.
+6. Tariq fetches your realm's JWKS (cached), verifies signature, checks `iss === EMBED_KEYCLOAK_ISSUER`, checks `aud` contains `tariq-widget`, checks `exp`.
+7. Tariq sets the Dify `user` field to `kc_<sub>` and streams the response back.
+8. If verification fails (expired, wrong aud, tampered): Tariq returns 401. Widget fires `authRequired` event. Your handler calls `keycloak.login()`, user re-authenticates, next message succeeds.
+
+---
+
+## API the widget exposes (`window.Tariq`)
+
+| Method | What it does |
+|--------|--------------|
+| `setTokenProvider(fn)` | Register an async function returning the current access token. Called before each send. **Use this.** |
+| `setToken(jwt)` | Imperative one-shot — only useful if you don't have a token holder to wrap |
+| `clearToken()` | Drop the token; subsequent sends are anonymous (or 401 if app requires auth) |
+| `on("authRequired", fn)` | Subscribe to 401 errors — typically calls `keycloak.login()` |
+| `on("ready" \| "open" \| "close" \| "messageReceived", fn)` | Other lifecycle events (optional) |
+| `open()` / `close()` / `toggle()` / `sendMessage(text)` / `reset()` | Programmatic control of the panel |
+
+---
+
+## FAQ
+
+**Do I need to send the token on every message, or just at login?**
+Don't think about it. The widget calls your provider before every send. Your `keycloak.updateToken(30)` line handles refresh transparently.
+
+**Can I store the token in `localStorage` to skip the round-trip?**
+Don't. `keycloak-js` already manages token lifecycle (refresh, logout sync). Just return `keycloak.token` from the provider — it's always current.
+
+**What if the user is logged out?**
+`keycloak.token` is `undefined`. Provider returns `null`. Widget sends the request without a token. If your app is in `EMBED_REQUIRE_AUTH`, Tariq returns 401 → your `authRequired` handler kicks them to login.
+
+**Can I have anonymous + authenticated chat on the same site?**
+Yes. Use two different `data-app` values, only one in `EMBED_REQUIRE_AUTH`. Or skip `EMBED_REQUIRE_AUTH` entirely — token-when-available, anon-when-not.
+
+**What if my realm is somewhere else and uses different audience?**
+Both are configurable. Tell us the issuer URL and the audience value(s) you want us to accept. We can accept multiple via comma-separated list.
+
+**Does the widget see my user's name / email / roles?**
+No. Only `sub`. Tariq does not request, parse, or forward any other claim.
+
+**Does the token leave Tariq's servers?**
+No. Token is verified at Tariq's edge. Dify only ever sees `user: kc_<sub>`.
+
+**Can a malicious page on a different origin steal the token via the iframe?**
+No. The iframe is sandboxed to Tariq's origin. The token is sent via `postMessage` validated against the parent origin (your site). Other origins cannot read or impersonate.
+
+**My users open the widget on multiple subdomains. Will their conversation history follow them?**
+Conversation continuity is keyed by `kc_<sub>`, which is the same across subdomains as long as they share the Keycloak SSO session. Yes, it follows.
+
+---
+
+## Smoke test
+
+After you ship the bridge script:
+
+1. Open browser DevTools → Console.
+2. Visit a page on your site while logged in.
+3. Type into the widget.
+4. Network tab → find the request to `chat.<our-domain>/api/chat/embed/messages`.
+5. Inspect the request body — it should contain a `token` field with a JWT.
+6. Decode the JWT at jwt.io → confirm `iss`, `aud`, and `sub` are correct.
+7. Log out of your site → send another message → expect 401 → expect `keycloak.login()` redirect.
+
+If step 7 doesn't redirect, check that your `authRequired` handler is registered.
+
+---
+
+## Contact
+
+Questions, audience naming, env var values, or production rollout: ping the Tariq team.

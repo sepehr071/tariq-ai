@@ -1,0 +1,15 @@
+{
+  "placeholder": "Type your message...",
+  "send": "Send",
+  "thinking": "Thinking...",
+  "welcome": "How can I help you today?",
+  "welcomeSubtitle": "Ask me anything",
+  "copy": "Copy",
+  "copied": "Copied!",
+  "errorLoadingMessages": "Failed to load messages. Please try again.",
+  "errorSendingMessage": "Failed to send message. Please try again.",
+  "errorLoadingConversations": "Failed to load conversations.",
+  "retry": "Retry",
+  "loadingMessages": "Loading messages...",
+  "dismiss": "Dismiss"
+}

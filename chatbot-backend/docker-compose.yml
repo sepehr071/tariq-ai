@@ -1,0 +1,84 @@
+services:
+  keycloak-db:
+    image: postgres:16-alpine
+    container_name: tariq-keycloak-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${KC_DB_NAME:-keycloak}
+      POSTGRES_USER: ${KC_DB_USER:-keycloak}
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
+    volumes:
+      - keycloak_pg_data:/var/lib/postgresql/data
+    networks:
+      - keycloak-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KC_DB_USER:-keycloak} -d ${KC_DB_NAME:-keycloak}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: tariq-keycloak
+    restart: unless-stopped
+    command: ["start-dev"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/${KC_DB_NAME:-keycloak}
+      KC_DB_USERNAME: ${KC_DB_USER:-keycloak}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
+      KC_HOSTNAME: ${KC_HOSTNAME:-localhost}
+      KC_HOSTNAME_STRICT: ${KC_HOSTNAME_STRICT:-false}
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:?KC_ADMIN_USER is required}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:?KC_ADMIN_PASSWORD is required}
+    ports:
+      - "${KC_PORT:-8080}:8080"
+    volumes:
+      - ./keycloak/bootstrap.sh:/opt/keycloak/bootstrap.sh:ro
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    networks:
+      - keycloak-net
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"status\": \"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  keycloak-bootstrap:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: tariq-keycloak-bootstrap
+    restart: "no"
+    entrypoint: ["/opt/keycloak/bootstrap.sh"]
+    environment:
+      KC_SERVER_URL: http://keycloak:8080
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:?KC_ADMIN_USER is required}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:?KC_ADMIN_PASSWORD is required}
+      REALM_NAME: ${REALM_NAME:-tariq}
+      CLIENT_ID: ${CLIENT_ID:-tariq-web}
+      AUDIENCE: ${AUDIENCE:-tariq-api}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      CREATE_DEV_USER: ${CREATE_DEV_USER:-false}
+      DEV_USER_EMAIL: ${DEV_USER_EMAIL:-demo@example.com}
+      DEV_USER_PASSWORD: ${DEV_USER_PASSWORD:-ChangeMe123!}
+      DEV_USER_ROLE: ${DEV_USER_ROLE:-user}
+    volumes:
+      - ./keycloak/bootstrap.sh:/opt/keycloak/bootstrap.sh:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    networks:
+      - keycloak-net
+
+volumes:
+  keycloak_pg_data:
+
+networks:
+  keycloak-net:
+    driver: bridge

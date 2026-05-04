@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+.venv/
+
+# Environment
+.env*
+!.env.example
+!.env.docker.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# SQLite dev database
+*.db

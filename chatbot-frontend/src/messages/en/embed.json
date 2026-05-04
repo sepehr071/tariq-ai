@@ -1,0 +1,9 @@
+{
+  "greeting": "Hi! How can I help you today?",
+  "newChat": "New chat",
+  "close": "Close",
+  "placeholder": "Type your message…",
+  "errorGeneric": "Something went wrong. Please try again.",
+  "errorUnknownApp": "This widget is not configured. Missing or unknown app identifier.",
+  "errorEmpty": "Please type a message before sending."
+}

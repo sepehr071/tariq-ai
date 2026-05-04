@@ -1,0 +1,80 @@
+{
+  "nav": {
+    "login": "Sign In",
+    "register": "Get Started"
+  },
+  "hero": {
+    "title": "Your Knowledgeable Islamic Companion",
+    "subtitle": "Ask Tariq anything about Islamic life. Powered by deep search through 50+ authentic Shia books on hadith, tafsir, fiqh, and ethics — in over 90 languages.",
+    "cta": "Start Learning Free",
+    "signIn": "Sign In"
+  },
+  "features": {
+    "title": "Why Tariq?",
+    "sources": {
+      "title": "Grounded in Authentic Sources",
+      "description": "Deep knowledge from 50+ verified Shia books covering hadith, tafsir, fiqh, and ethics — no hallucinated rulings."
+    },
+    "fiqh": {
+      "title": "Practical Fiqh Answers",
+      "description": "Get clear answers to everyday jurisprudence questions — from prayer rulings to transactions — grounded in Shia scholarship."
+    },
+    "multilingual": {
+      "title": "Speaks 90+ Languages",
+      "description": "Ask in any language — Tariq understands over 90 languages and responds naturally, with full RTL support for Arabic and Persian."
+    },
+    "search": {
+      "title": "Deep Source Search",
+      "description": "Tariq doesn't guess — it searches through actual book content to find accurate, well-informed answers."
+    }
+  },
+  "howItWorks": {
+    "title": "How Tariq Works",
+    "step1": {
+      "title": "Ask Your Question",
+      "description": "Type any Islamic question in any language — about prayer, fasting, ethics, or daily life."
+    },
+    "step2": {
+      "title": "Tariq Searches the Sources",
+      "description": "Your question is matched against 50+ authentic Shia books on hadith, tafsir, fiqh, and ethics."
+    },
+    "step3": {
+      "title": "Get a Knowledgeable Answer",
+      "description": "Receive a clear, well-informed answer — like talking to a knowledgeable friend who studied the sources."
+    }
+  },
+  "knowledge": {
+    "title": "Powered by 50+ Authentic Books",
+    "subtitle": "Tariq draws from a curated library of verified Shia scholarship across four major disciplines.",
+    "hadith": {
+      "title": "Hadith Collections",
+      "description": "Authentic narrations from the Prophet and Ahlul Bayt, including major Shia hadith compilations."
+    },
+    "tafsir": {
+      "title": "Quranic Tafsir",
+      "description": "Detailed Quran commentary from renowned Shia scholars and exegetes."
+    },
+    "fiqh": {
+      "title": "Jurisprudence (Fiqh)",
+      "description": "Practical rulings on worship, transactions, and daily life from leading Shia jurists."
+    },
+    "akhlaq": {
+      "title": "Ethics & Spirituality",
+      "description": "Guidance on moral conduct, self-improvement, and spiritual growth from Islamic sources."
+    }
+  },
+  "cta": {
+    "title": "Ready to Explore Islamic Knowledge?",
+    "subtitle": "Start asking Tariq your questions — grounded answers from authentic Shia sources, in your language.",
+    "button": "Start Asking Free"
+  },
+  "footer": {
+    "copyright": "© 2026 Tariq AI. All rights reserved."
+  },
+  "demo": {
+    "userMessage1": "What's the ruling on combining prayers while traveling?",
+    "aiMessage1": "In Shia jurisprudence, a traveler who has gone at least 8 farsakh (about 44 km) can shorten and combine Dhuhr with Asr, and Maghrib with Isha.",
+    "userMessage2": "میشه درباره نماز مسافر بیشتر توضیح بدی؟",
+    "aiMessage2": "بله! سفر شرعی شرایطی دارد: مسافت باید حداقل ۸ فرسخ باشد و قصد رفت و برگشت داشته باشید."
+  }
+}
